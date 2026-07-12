@@ -217,3 +217,112 @@ def answer(question: str, history: list[dict] | None = None) -> dict:
         "citations": citations,
         "sql_queries": sql_queries,
     }
+
+
+def stream_answer(question: str, history: list[dict] | None = None):
+    """
+    Generator version for the FastAPI SSE endpoint. Yields dicts:
+      {"type": "token", "text": "..."}                    -- live answer tokens
+      {"type": "tool_call", "name": "search_docs", ...}     -- fired when a tool starts
+      {"type": "done", "tools_used": [...], "citations": [...], "sql_queries": [...]}
+
+    Streams every round from the API. A round where the model emits tool_call
+    deltas is buffered silently (arguments aren't usable until fully assembled
+    anyway); a round with no tool calls is the final answer and its tokens are
+    forwarded live as they arrive.
+    """
+    client = _get_openai()
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
+    tools_used = []
+    citations = []
+    sql_queries = []
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        stream = client.chat.completions.create(
+            model=MODEL, messages=messages, tools=TOOLS, tool_choice="auto",
+            temperature=0, stream=True,
+        )
+
+        collected_content = ""
+        collected_tool_calls: dict[int, dict] = {}
+        started_streaming_content = False
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in collected_tool_calls:
+                        collected_tool_calls[idx] = {"id": None, "name": "", "arguments": ""}
+                    if tc_delta.id:
+                        collected_tool_calls[idx]["id"] = tc_delta.id
+                    if tc_delta.function and tc_delta.function.name:
+                        collected_tool_calls[idx]["name"] += tc_delta.function.name
+                    if tc_delta.function and tc_delta.function.arguments:
+                        collected_tool_calls[idx]["arguments"] += tc_delta.function.arguments
+
+            if delta.content:
+                collected_content += delta.content
+                # only forward live if no tool call has appeared in this round so far
+                if not collected_tool_calls:
+                    started_streaming_content = True
+                    yield {"type": "token", "text": delta.content}
+
+        if collected_tool_calls:
+            messages.append({
+                "role": "assistant",
+                "content": collected_content or None,
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in collected_tool_calls.values()
+                ],
+            })
+
+            for tc in collected_tool_calls.values():
+                name = tc["name"]
+                args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                tools_used.append(name)
+                yield {"type": "tool_call", "name": name, "args": args}
+
+                exec_result = _execute_tool(name, args)
+
+                if exec_result["ui_meta"]["type"] == "docs":
+                    citations.extend(exec_result["ui_meta"]["citations"])
+                elif exec_result["ui_meta"]["type"] == "sql":
+                    sql_queries.append(exec_result["ui_meta"])
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": json.dumps(exec_result["result_for_model"]),
+                })
+            continue  # next round: get the final streamed answer
+
+        # no tool calls this round -> tokens were already streamed live above
+        if started_streaming_content or collected_content:
+            yield {
+                "type": "done",
+                "tools_used": tools_used,
+                "citations": citations,
+                "sql_queries": sql_queries,
+            }
+            return
+
+    # safety valve
+    resp = client.chat.completions.create(model=MODEL, messages=messages, temperature=0)
+    yield {"type": "token", "text": resp.choices[0].message.content}
+    yield {
+        "type": "done",
+        "tools_used": tools_used,
+        "citations": citations,
+        "sql_queries": sql_queries,
+    }
