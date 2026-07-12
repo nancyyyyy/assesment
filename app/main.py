@@ -4,21 +4,26 @@ FastAPI backend. One streaming chat endpoint that wraps the agent.
 Run: uvicorn app.main:app --reload --port 8000
 """
 import json
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.agent import stream_answer
-from dotenv import load_dotenv
-load_dotenv()
+
 app = FastAPI(title="Northwind Gadgets Support Agent")
 
-# Wide open for local dev / assessment purposes. Tighten this to the real
-# frontend origin before treating this as production.
+# In production, set FRONTEND_ORIGIN to your deployed frontend's URL.
+# Defaults to wide-open for local development.
+import os
+_frontend_origin = os.environ.get("FRONTEND_ORIGIN", "*")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[_frontend_origin] if _frontend_origin != "*" else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

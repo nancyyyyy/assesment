@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.git/
+.gitignore
+frontend/
+data/chroma/
+data/orders.db
+*.md
