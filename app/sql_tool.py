@@ -52,6 +52,11 @@ def generate_sql(question: str) -> str:
         "- Output ONLY the raw SQL, no markdown fences, no explanation.\n"
         "- Only use columns that exist in the schema above. Never invent columns.\n"
         "- Only generate SELECT statements. Never write/modify data.\n"
+        "- Any question asking for specific column values of one or more orders "
+        "(status, date, amount, customer, product) IS answerable — write the SELECT.\n"
+        "- Only output NOT_APPLICABLE if the question asks about something with "
+        "no corresponding column in this schema at all (e.g. employee salaries, "
+        "warranty terms, refund policy text).\n"
         "- If the question cannot be answered from this schema, output exactly: NOT_APPLICABLE"
     )
 
@@ -83,7 +88,9 @@ def validate_sql(sql: str) -> tuple[bool, str]:
         return False, "multiple_statements"
 
     # crude but effective column-hallucination guard: every bare identifier-looking
-    # token that isn't a known column/keyword/table must not silently pass through
+    # token that isn't a known column/keyword/table must not silently pass through.
+    # Strip quoted string literals FIRST, otherwise values like 'pending' or
+    # 'delivered' get mistaken for unknown column names and cause a false fallback.
     sql_no_strings = re.sub(r"'[^']*'", "''", sql)
     used_columns = set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", sql_no_strings))
     known_ok = set(SCHEMA["orders"]) | {
