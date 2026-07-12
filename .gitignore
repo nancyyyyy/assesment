@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+data/chroma/
+data/orders.db
+venv/
+.venv/
+node_modules/
+.next/
+*.log
+.DS_Store
+.claude
